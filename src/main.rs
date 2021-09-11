@@ -28,7 +28,8 @@ use bindings::{
     Windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID,
     Windows::Win32::UI::Shell::{IShellLinkW, ShellLink},
     Windows::UI::Notifications::{
-        ToastNotification, ToastNotificationManager, NotificationData,
+        ToastNotification, ToastNotificationManager, NotificationData, ToastDismissedEventArgs,
+        ToastDismissalReason,
     },
 };
 
@@ -346,6 +347,7 @@ fn main() -> windows::Result<()> {
     println!("DwmKiller v{}\n", env!("CARGO_PKG_VERSION"));
 
     const DWM_INITIAL_MEM_LIMIT: usize = 500;
+    const MEM_LIMIT_STEP: usize = 100;
 
     if !is_elevated() {
         eprintln!("错误：权限不足。请以管理员权限运行此应用。");
@@ -374,29 +376,37 @@ fn main() -> windows::Result<()> {
         }},
     );
     let dismissed_handler = TypedEventHandler::new(
-        enclose! { (manager, toast_mutex) move |_, _| {
+        enclose! { (manager, toast_mutex) move |_, e: &Option<ToastDismissedEventArgs>| {
+            let e = e.as_ref().unwrap();
             let mut unlocked = toast_mutex.lock().unwrap();
-            println!("信息：通知已被忽略。");
-            let _ = manager.Hide(&unlocked.toast);
-            unlocked.last_mem = 0;
-            // Increase limit by 100 MB
-            unlocked.mem_limit += 100;
+            match e.Reason().unwrap() {
+                ToastDismissalReason::UserCanceled => {
+                    println!("信息：通知已被忽略。");
+                    let _ = manager.Hide(&unlocked.toast);
+                    while unlocked.last_mem >= unlocked.mem_limit {
+                        unlocked.mem_limit += MEM_LIMIT_STEP;
+                    }
+                    unlocked.last_mem = 0;
+                }
+                ToastDismissalReason::ApplicationHidden | ToastDismissalReason::TimedOut | _ => (),
+            }
             Ok(())
         }},
     );
-    let try_update_toast_closure = enclose! { (toast_mutex, activated_handler, dismissed_handler) move || {
+    let try_update_toast_closure = enclose! { (manager, toast_mutex, activated_handler, dismissed_handler) move || {
         let mut unlocked = toast_mutex.lock().unwrap();
-        if unlocked.last_mem >= unlocked.mem_limit {
-            // Already approached the limit, ignore for now
-            return false;
-        }
         let cur_mem = get_dwm_mem_usage().unwrap_or_else(|e| {
             eprintln!("错误：无法获取 dwm.exe 内存占用 ({:?})。", e);
             0
         });
-        unlocked.last_mem = cur_mem;
         println!("当前内存用量：{} / {} MB", cur_mem, unlocked.mem_limit);
+        if unlocked.last_mem >= unlocked.mem_limit {
+            // Already approached the limit, ignore for now
+            return false;
+        }
+        unlocked.last_mem = cur_mem;
         if cur_mem >= unlocked.mem_limit {
+            let _ = manager.Hide(&unlocked.toast);
             unlocked.toast = gen_toast_notification(unlocked.mem_limit, cur_mem).unwrap();
             // update_toast_notification(&unlocked.toast, unlocked.mem_limit, cur_mem).unwrap();
             unlocked.toast.Activated(&activated_handler).unwrap();
@@ -409,7 +419,6 @@ fn main() -> windows::Result<()> {
     loop {
         if try_update_toast_closure() {
             let unlocked = toast_mutex.lock().unwrap();
-            let _ = manager.Hide(&unlocked.toast);
             manager.Show(&unlocked.toast)?;
         }
 

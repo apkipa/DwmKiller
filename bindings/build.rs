@@ -3,7 +3,7 @@ fn main() {
         Windows::UI::Notifications::{
             Notification, ToastNotificationManager, ToastNotifier, ToastNotification,
             ToastTemplateType, ToastNotificationActionTriggerDetail, ToastNotificationHistory,
-            NotificationData,
+            NotificationData, ToastDismissedEventArgs, ToastDismissedEventArgs,
         },
         Windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID,
         Windows::Win32::System::LibraryLoader::GetModuleFileNameW,
